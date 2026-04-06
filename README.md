@@ -25,12 +25,13 @@ If you find this integration useful, consider supporting the development:
 
 ## Overview
 
-This Home Assistant integration allows you to control Bluetooth Low Energy (BLE) LED strips, bulbs, and light bars that use the **ELK-BLEDOM**, **MELK**, **LEDBLE**, and similar protocols. These devices are commonly sold under various brands and controlled via mobile apps like:
+This Home Assistant integration allows you to control Bluetooth Low Energy (BLE) lights that use the **ELK-BLEDOM**, **MELK**, **LEDBLE** and similar protocols. These devices are commonly sold under various brands and controlled via mobile apps like:
 
--  **duoCo Strip** ([Play Store](https://play.google.com/store/apps/details?id=shy.smartled))
--  **Lotus Lantern** ([Play Store](https://play.google.com/store/apps/details?id=wl.smartled))
--  **Lotus Lamp X** ([Play Store](https://play.google.com/store/apps/details?id=com.szelk.ledlamppro))
--  **Happy Lighting**
+<div align="center">
+  
+**duoCo Strip** ([Play Store](https://play.google.com/store/apps/details?id=shy.smartled)) | **Lotus Lantern** ([Play Store](https://play.google.com/store/apps/details?id=wl.smartled)) | **Lotus Lamp X** ([Play Store](https://play.google.com/store/apps/details?id=com.szelk.ledlamppro)) | **Happy Lighting**
+
+</div>
 
 ---
 
@@ -38,40 +39,22 @@ This Home Assistant integration allows you to control Bluetooth Low Energy (BLE)
 
 This integration currently supports the following device models:
 
-<table>
-<tr>
-<td width="50%">
-
-### ELK Family
-- **ELK-BLEDOM**
-- **ELK-BLEDOB** 
-- **ELK-BLEDDM**
-- **ELK-BLE**
-- **ELK-BTC**
-- **ELK-BULB** 
-- **ELK-BULB2** 
-- **ELK-LAMPL** 
-- **MELK**
-- **MELK-OA10**
-- **MELK-OC10**
-- **MELK-OF10**
-- **MELK-OG10**
-- **MELK-OA21**
-- **LEDBLE**
-- **LED-**
-- **JACKYLED**
-- **XROCKER**
-- **DMRRBA-007** 
-
-</td>
-</tr>
-</table>
+|ELK|MELK|LEDBLE|LED-|JACKYLED|XROCKER|DMRRBA|
+|---|---|---|---|---|---|---|
+|ELK-BLE|MELK-OA10|||||DMRRBA-007|
+|ELK-BLEDOB|MELK-OA21||||||
+|ELK-BLEDOM|MELK-OC10||||||
+|ELK-BLEDDM|MELK-OF10||||||
+|ELK-BTC|MELK-OG10||||||
+|ELK-BULB|||||||
+|ELK-BULB2|||||||
+|ELK-LAMPL|||||||
 
 > **Note**: These devices use specific Bluetooth UUIDs:
 > - Write UUID: `0000fff3-...` or `0000ffe1-...`
 > - Read UUID: `0000fff4-...` or `0000ffe2-...`
 
-### Where to Buy
+#### Where to Buy
 
 -  [Amazon LED Strips](https://www.amazon.es/gp/product/B00VFME0Q2) (Example)
 -  [LED Light Bar](https://www.amazon.es/bedee-Regulable-Inteligente-Bluetooth-Dormitorio/dp/B0BNPMGR1H) (Example)
