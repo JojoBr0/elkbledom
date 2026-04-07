@@ -61,7 +61,7 @@ def retry_bluetooth_connection_error(func: WrapFuncType) -> WrapFuncType:
 
     return cast(WrapFuncType, _async_wrap_retry_bluetooth_connection_error)
 
-async def send_packet(packet, client):
+async def send_packet(packet, client) -> None:
     print("Sending packet " + packet)
     try:
         data = bytes.fromhex(packet)
@@ -71,7 +71,7 @@ async def send_packet(packet, client):
     await client.write_gatt_char("0000fff3-0000-1000-8000-00805f9b34fb", data, False)
 
 
-async def main():
+async def main() -> None:
     notes = []
     prev_note = ""
     note_index = 0
@@ -104,7 +104,7 @@ async def main():
                 notes.append(input("Note:"))
                 packet_vals.append(val)
         '''
-    with open('packet_notes.txt', 'w') as outfile:
+    with open('packet_notes.txt', 'w', encoding="utf-8") as outfile:
         for i in range(0,len(notes)):
             outfile.write(f"{notes[i]} = {packet_vals[i]}\n")
     

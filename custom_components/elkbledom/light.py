@@ -32,7 +32,7 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
     vol.Required(CONF_MAC): cv.string
 })
 
-async def async_setup_entry(hass, config_entry, async_add_devices):
+async def async_setup_entry(hass, config_entry, async_add_devices) -> None:
     instance = hass.data[DOMAIN][config_entry.entry_id]
     await instance.update()
     async_add_devices([BLEDOMLight(instance, config_entry.data["name"], config_entry.entry_id)])
@@ -41,9 +41,23 @@ class BLEDOMLight(RestoreEntity, LightEntity):
     def __init__(self, bledomInstance: BLEDOMInstance, name: str, entry_id: str) -> None:
         self._instance = bledomInstance
         self._entry_id = entry_id
-        self._attr_supported_color_modes = {ColorMode.RGB, ColorMode.COLOR_TEMP, ColorMode.WHITE}
-        self._attr_supported_features = LightEntityFeature.EFFECT
-        self._attr_color_mode = ColorMode.WHITE
+        has_white = bool(self._instance.model.get_white_cmd(self._instance.model_name, 255))
+        has_color_temp = bool(self._instance.model.get_color_temp_cmd(self._instance.model_name, 50, 50))
+        has_rgb = bool(self._instance.model.get_color_cmd(self._instance.model_name, 255, 255, 255))
+        has_effect = bool(self._instance.model.get_effect_cmd(self._instance.model_name, 1))
+        self._has_effect_speed = bool(self._instance.model.get_effect_speed_cmd(self._instance.model_name, 128))
+        device_color_modes = set()
+        if has_white:
+            device_color_modes.add(ColorMode.WHITE)
+            self._attr_color_mode = ColorMode.WHITE
+        if has_color_temp:
+            device_color_modes.add(ColorMode.COLOR_TEMP)
+            self._attr_color_mode = ColorMode.COLOR_TEMP
+        if has_rgb:
+            device_color_modes.add(ColorMode.RGB)
+            self._attr_color_mode = ColorMode.RGB
+        self._attr_supported_color_modes = device_color_modes
+        self._attr_supported_features = LightEntityFeature.EFFECT if has_effect else LightEntityFeature(0)
         self._attr_name = name
         self._attr_effect = None
         self._attr_unique_id = self._instance.address
@@ -97,9 +111,9 @@ class BLEDOMLight(RestoreEntity, LightEntity):
     @property
     def extra_state_attributes(self):
         """Return entity specific state attributes."""
-        return {
-            "effect_speed": self._instance.effect_speed,
-        }
+        if self._has_effect_speed:
+            return {"effect_speed": self._instance.effect_speed}
+        return {}
 
     @property
     def rgb_color(self):
@@ -120,7 +134,7 @@ class BLEDOMLight(RestoreEntity, LightEntity):
         )
 
     @property
-    def should_poll(self):
+    def should_poll(self) -> bool:
         """No polling needed for a demo light."""
         return False
 
@@ -217,7 +231,6 @@ class BLEDOMLight(RestoreEntity, LightEntity):
             LOGGER.debug(f"No previous state found for {self.name}, setting defaults")
             self._instance._is_on = False
             self._instance._brightness = 255
-            self._attr_color_mode = ColorMode.WHITE
 
     def _transform_color_brightness(self, color: Tuple[int, int, int], set_brightness: int):
         rgb = match_max_scale((255,), color)
@@ -230,7 +243,6 @@ class BLEDOMLight(RestoreEntity, LightEntity):
             await self._instance.turn_on()
             if self._instance.reset:
                 LOGGER.debug("Change color to white to reset led strip when other infrared control interact")
-                self._attr_color_mode = ColorMode.WHITE
                 self._attr_effect = None
                 await self._instance.set_color(self._transform_color_brightness((255, 255, 255), 250), is_base_color=False)
                 if ATTR_WHITE in kwargs:
