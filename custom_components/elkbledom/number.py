@@ -5,16 +5,14 @@ from homeassistant.components.number import (
     NumberEntityDescription,
 )
 
-from .elkbledom import BLEDOMInstance
+from .elkbledom import BLEDOMInstance, BLEDOMBluetoothEntity
 from .const import DOMAIN
 
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers import device_registry
 from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
-
 
 import logging
 
@@ -26,12 +24,13 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     instance = hass.data[DOMAIN][config_entry.entry_id]
+    await instance.update()
     entities = [BLEDOMMicSensitivity(instance, "Mic Sensitivity " + config_entry.data["name"], config_entry.entry_id)]
     if instance.model.get_effect_speed_cmd(instance.model_name, 128):
         entities.append(BLEDOMEffectSpeed(instance, "Effect Speed " + config_entry.data["name"], config_entry.entry_id))
     async_add_entities(entities)
 
-class BLEDOMEffectSpeed(RestoreEntity, NumberEntity):
+class BLEDOMEffectSpeed(BLEDOMBluetoothEntity, NumberEntity):
     """Effect Speed entity"""
 
     def __init__(self, bledomInstance: BLEDOMInstance, attr_name: str, entry_id: str) -> None:
@@ -39,10 +38,7 @@ class BLEDOMEffectSpeed(RestoreEntity, NumberEntity):
         self._attr_name = attr_name
         self._attr_unique_id = self._instance.address + "_effect_speed"
         self._effect_speed = 0
-
-    @property
-    def available(self):
-        return self._instance.is_on != None
+        self._hass = None
 
     @property
     def name(self) -> str:
@@ -65,7 +61,6 @@ class BLEDOMEffectSpeed(RestoreEntity, NumberEntity):
         """Return device info."""
         return DeviceInfo(
             identifiers={
-                # Serial numbers are unique identifiers within a specific domain
                 (DOMAIN, self._instance.address)
             },
             name=self.name,
@@ -90,7 +85,11 @@ class BLEDOMEffectSpeed(RestoreEntity, NumberEntity):
     async def async_added_to_hass(self) -> None:
         """Restore previous state when entity is added to hass."""
         await super().async_added_to_hass()
-        
+
+        # Store hass reference and register bluetooth tracking
+        self._hass = self.hass
+        self._async_setup_bluetooth_tracking()
+
         # Restore the last known effect speed
         if (last_state := await self.async_get_last_state()) is not None:
             try:
@@ -99,7 +98,8 @@ class BLEDOMEffectSpeed(RestoreEntity, NumberEntity):
             except (ValueError, TypeError):
                 LOG.debug(f"Could not restore effect speed for {self.name}, using default")
 
-class BLEDOMMicSensitivity(RestoreEntity, NumberEntity):
+
+class BLEDOMMicSensitivity(BLEDOMBluetoothEntity, NumberEntity):
     """Microphone Sensitivity entity"""
 
     def __init__(self, bledomInstance: BLEDOMInstance, attr_name: str, entry_id: str) -> None:
@@ -107,10 +107,7 @@ class BLEDOMMicSensitivity(RestoreEntity, NumberEntity):
         self._attr_name = attr_name
         self._attr_unique_id = self._instance.address + "_mic_sensitivity"
         self._mic_sensitivity = 50
-
-    @property
-    def available(self):
-        return self._instance.is_on != None
+        self._hass = None
 
     @property
     def name(self) -> str:
@@ -157,7 +154,11 @@ class BLEDOMMicSensitivity(RestoreEntity, NumberEntity):
     async def async_added_to_hass(self) -> None:
         """Restore previous state when entity is added to hass."""
         await super().async_added_to_hass()
-        
+
+        # Store hass reference and register bluetooth tracking
+        self._hass = self.hass
+        self._async_setup_bluetooth_tracking()
+
         # Restore the last known mic sensitivity
         if (last_state := await self.async_get_last_state()) is not None:
             try:

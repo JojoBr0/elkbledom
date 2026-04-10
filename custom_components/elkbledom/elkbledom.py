@@ -15,7 +15,9 @@ from bleak_retry_connector import (
     BleakNotFoundError,
     establish_connection,
 )
-from homeassistant.components.bluetooth import async_discovered_service_info, async_ble_device_from_address
+from homeassistant.components import bluetooth
+from homeassistant.core import callback
+from homeassistant.helpers.restore_state import RestoreEntity
 from home_assistant_bluetooth import BluetoothServiceInfo
 
 from .model import Model
@@ -75,7 +77,7 @@ class DeviceData():
         self._name = self._discovery.name
         self._rssi = self._discovery.rssi
         self._hass = hass
-        self._bledevice = async_ble_device_from_address(hass, self._address)
+        self._bledevice = bluetooth.async_ble_device_from_address(hass, self._address)
         
     @property
     def is_supported(self) -> bool:
@@ -102,7 +104,7 @@ class DeviceData():
     
     def update_device(self) -> None:
         #TODO for discovery_info in async_last_service_info(self._hass, self._address):
-        for discovery_info in async_discovered_service_info(self._hass):
+        for discovery_info in bluetooth.async_discovered_service_info(self._hass):
             if discovery_info.address == self._address:
                 self._rssi = discovery_info.rssi
                 ##TODO SOMETHING WITH DEVICE discovery_info
@@ -111,6 +113,66 @@ class DeviceData():
     def _start_update(self, service_info: BluetoothServiceInfo) -> None:
         """Update from BLE advertisement data."""
         LOGGER.debug("Parsing Govee BLE advertisement data: %s", service_info)
+
+class BLEDOMBluetoothEntity(RestoreEntity):
+    """Base class providing Bluetooth availability tracking for all BLEDOM entities.
+
+    Subclasses must set self._instance (BLEDOMInstance) and self._hass,
+    and call self._async_setup_bluetooth_tracking() inside async_added_to_hass.
+    """
+
+    _hass = None
+
+    @property
+    def available(self):
+        """Return True if the device is present on the Bluetooth stack."""
+        if self._instance.is_on is None:
+            return False
+        if self._hass is None:
+            return True  # hass not yet set (before async_added_to_hass)
+        return bluetooth.async_address_present(
+            self._hass, self._instance.address, connectable=True
+        )
+
+    def _async_setup_bluetooth_tracking(self) -> None:
+        """Register Bluetooth availability callbacks.
+
+        Must be called inside async_added_to_hass after self._hass is set.
+        """
+        self.async_on_remove(
+            bluetooth.async_track_unavailable(
+                self._hass,
+                self._async_device_unavailable,
+                self._instance.address,
+                connectable=True,
+            )
+        )
+        self.async_on_remove(
+            bluetooth.async_register_callback(
+                self._hass,
+                self._async_device_available,
+                {"address": self._instance.address, "connectable": True},
+                bluetooth.BluetoothScanningMode.ACTIVE,
+            )
+        )
+
+    @callback
+    def _async_device_unavailable(
+        self, _service_info: bluetooth.BluetoothServiceInfoBleak
+    ) -> None:
+        """Handle device becoming unavailable."""
+        LOGGER.debug("%s is unavailable", self.name)
+        self.async_write_ha_state()
+
+    @callback
+    def _async_device_available(
+        self,
+        service_info: bluetooth.BluetoothServiceInfoBleak,
+        change: bluetooth.BluetoothChange,
+    ) -> None:
+        """Handle device becoming available again."""
+        LOGGER.debug("%s is available again", self.name)
+        self.async_write_ha_state()
 
 class BLEDOMInstance:
     def __init__(self, address, reset: bool, delay: int, hass, forced_model: str = None) -> None:
@@ -148,11 +210,11 @@ class BLEDOMInstance:
         
 
         try:
-            self._device = async_ble_device_from_address(hass, self._address)
+            self._device = bluetooth.async_ble_device_from_address(hass, self._address)
         except (Exception) as error:
             LOGGER.error("Error getting device: %s", error)
 
-        for discovery_info in async_discovered_service_info(hass):
+        for discovery_info in bluetooth.async_discovered_service_info(hass):
             if discovery_info.address == address:
                 devicedata = DeviceData(hass, discovery_info)
                 #LOGGER.debug("device %s: %s %s",devicedata.name, devicedata.address, devicedata.rssi)
@@ -540,21 +602,6 @@ class BLEDOMInstance:
                 self._brightness = 255
 
             self._device_data.update_device()
-            #future = asyncio.get_event_loop().create_future()
-            #await self._device.start_notify(self._read_uuid, create_status_callback(future))
-            #await self._write([0x7e, 0x00, 0x01, 0xfa, 0x00, 0x00, 0x00, 0x00, 0xef])
-            #await self._write([0x7e, 0x00, 0x10])
-            #await self._write([0xef, 0x01, 0x77])
-            #await self._write([0x10])
-            #await self._write([0x25, 0x00])
-            #await self._write([0x25, 0x02])
-            #await asyncio.wait_for(future, 5.0)
-            #await self._device.stop_notify(self._read_uuid)
-            #res = future.result()
-            #self._is_on = True #if res[2] == 0x23 else False if res[2] == 0x24 else None
-            # self._rgb_color = (res[6], res[7], res[8])
-            # self._brightness = res[9] if res[9] > 0 else None
-            # LOGGER.debug(''.join(format(x, ' 03x') for x in res))
             
         except (Exception) as error:
             self._is_on = False

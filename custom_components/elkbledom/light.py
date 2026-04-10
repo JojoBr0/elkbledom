@@ -4,13 +4,12 @@ import logging
 import voluptuous as vol
 from typing import Any, Optional, Tuple
 
-from .elkbledom import BLEDOMInstance
+from .elkbledom import BLEDOMInstance, BLEDOMBluetoothEntity
 from .const import DOMAIN, EFFECTS, EFFECTS_list, EFFECTS_MAP, EFFECTS_LIST_MAP, CONF_EFFECTS_CLASS
 
 from homeassistant.const import CONF_MAC
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.components.light import (
     PLATFORM_SCHEMA,
     ATTR_BRIGHTNESS,
@@ -34,9 +33,10 @@ PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend({
 
 async def async_setup_entry(hass, config_entry, async_add_devices) -> None:
     instance = hass.data[DOMAIN][config_entry.entry_id]
+    await instance.update()
     async_add_devices([BLEDOMLight(instance, config_entry.data["name"], config_entry.entry_id)])
 
-class BLEDOMLight(RestoreEntity, LightEntity):
+class BLEDOMLight(BLEDOMBluetoothEntity, LightEntity):
     def __init__(self, bledomInstance: BLEDOMInstance, name: str, entry_id: str) -> None:
         self._instance = bledomInstance
         self._entry_id = entry_id
@@ -62,10 +62,6 @@ class BLEDOMLight(RestoreEntity, LightEntity):
         self._attr_effect = None
         self._attr_unique_id = self._instance.address
         self._hass = None
-
-    @property
-    def available(self):
-        return self._instance.is_on != None
 
     @property
     def brightness(self):
@@ -126,7 +122,6 @@ class BLEDOMLight(RestoreEntity, LightEntity):
         """Return device info."""
         return DeviceInfo(
             identifiers={
-                # Serial numbers are unique identifiers within a specific domain
                 (DOMAIN, self._instance.address)
             },
             name=self.name,
@@ -159,9 +154,10 @@ class BLEDOMLight(RestoreEntity, LightEntity):
         """Restore previous state when entity is added to hass."""
         await super().async_added_to_hass()
         
-        # Store hass reference for config access
+        # Store hass reference and register bluetooth tracking
         self._hass = self.hass
-        
+        self._async_setup_bluetooth_tracking()
+
         # Restore the last known state
         if (last_state := await self.async_get_last_state()) is not None:
             LOGGER.debug(f"Restoring previous state for {self.name}: {last_state.state}")
@@ -266,31 +262,15 @@ class BLEDOMLight(RestoreEntity, LightEntity):
                 if ATTR_WHITE in kwargs:
                     await self._instance.set_white(kwargs[ATTR_WHITE])
 
-        
-        if ATTR_BRIGHTNESS in kwargs and kwargs[ATTR_BRIGHTNESS] != self.brightness:
-            brightness = kwargs[ATTR_BRIGHTNESS]
-            if self._attr_color_mode == ColorMode.RGB and self.rgb_color is not None:
-                # RGB mode: use native brightness or scale RGB
-                await self._instance.set_brightness(brightness)
-            elif self._attr_color_mode == ColorMode.COLOR_TEMP:
-                # COLOR_TEMP mode: re-apply current temp at new brightness
-                # (also handled below if ATTR_COLOR_TEMP_KELVIN is present, but
-                #  if only brightness changes we must apply it here)
-                current_temp = self.color_temp_kelvin
-                if current_temp and ATTR_COLOR_TEMP_KELVIN not in kwargs:
-                    await self._instance.set_color_temp_kelvin(current_temp, brightness)
-            elif self._attr_color_mode == ColorMode.WHITE:
-                # WHITE mode: brightness is the white channel intensity
-                if ATTR_WHITE not in kwargs:
-                    await self._instance.set_white(brightness)
+        if ATTR_BRIGHTNESS in kwargs and kwargs[ATTR_BRIGHTNESS] != self.brightness and self.rgb_color != None:
+            await self._instance.set_brightness(kwargs[ATTR_BRIGHTNESS])
 
         if ATTR_COLOR_TEMP_KELVIN in kwargs:
             self._attr_color_mode = ColorMode.COLOR_TEMP
-            new_temp = kwargs[ATTR_COLOR_TEMP_KELVIN]
-            new_brightness = kwargs.get(ATTR_BRIGHTNESS, self.brightness)
-            if new_temp != self.color_temp_kelvin or ATTR_BRIGHTNESS in kwargs:
+            if kwargs[ATTR_COLOR_TEMP_KELVIN] != self.color_temp_kelvin:
                 self._attr_effect = None
-                await self._instance.set_color_temp_kelvin(new_temp, new_brightness)
+                brightness = kwargs.get(ATTR_BRIGHTNESS, self.brightness)
+                await self._instance.set_color_temp_kelvin(kwargs[ATTR_COLOR_TEMP_KELVIN], brightness)
 
         if ATTR_WHITE in kwargs:
             if ColorMode.WHITE in self._attr_supported_color_modes:

@@ -7,10 +7,9 @@ from homeassistant.core import HomeAssistant
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers import device_registry
 
-from .elkbledom import BLEDOMInstance
+from .elkbledom import BLEDOMInstance, BLEDOMBluetoothEntity
 from .const import DOMAIN
 
 import logging
@@ -23,11 +22,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     instance = hass.data[DOMAIN][config_entry.entry_id]
+    await instance.update()
     async_add_entities([
         BLEDOMMicSwitch(instance, "Mic Enable " + config_entry.data["name"], config_entry.entry_id)
     ])
 
-class BLEDOMMicSwitch(RestoreEntity, SwitchEntity):
+class BLEDOMMicSwitch(BLEDOMBluetoothEntity, SwitchEntity):
     """Microphone Enable/Disable switch entity"""
 
     def __init__(self, bledomInstance: BLEDOMInstance, attr_name: str, entry_id: str) -> None:
@@ -35,10 +35,7 @@ class BLEDOMMicSwitch(RestoreEntity, SwitchEntity):
         self._attr_name = attr_name
         self._attr_unique_id = self._instance.address + "_mic_enable"
         self._is_on = False
-
-    @property
-    def available(self):
-        return self._instance.is_on != None
+        self._hass = None
 
     @property
     def name(self) -> str:
@@ -80,7 +77,11 @@ class BLEDOMMicSwitch(RestoreEntity, SwitchEntity):
     async def async_added_to_hass(self) -> None:
         """Restore previous state when entity is added to hass."""
         await super().async_added_to_hass()
-        
+
+        # Store hass reference and register bluetooth tracking
+        self._hass = self.hass
+        self._async_setup_bluetooth_tracking()
+
         # Restore the last known mic state
         if (last_state := await self.async_get_last_state()) is not None:
             if last_state.state == "on":
