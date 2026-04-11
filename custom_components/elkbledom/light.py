@@ -170,10 +170,9 @@ class BLEDOMLight(BLEDOMBluetoothEntity, LightEntity):
                 self._instance._is_on = False
                 LOGGER.debug(f"Restored state: OFF")
             elif last_state.state == "unavailable":
-                # If previous state was unavailable, assume device is off but available
-                # This prevents the entity from staying unavailable after restart
-                self._instance._is_on = False
-                LOGGER.debug(f"Previous state was unavailable, setting to OFF")
+                # Leave _is_on as None so the availability check correctly reports
+                # unavailable until a real connection is established.
+                LOGGER.debug("Previous state was unavailable, keeping _is_on=None")
             
             # Restore brightness
             if ATTR_BRIGHTNESS in last_state.attributes:
