@@ -124,12 +124,16 @@ class BLEDOMBluetoothEntity(RestoreEntity):
     _hass = None
 
     @property
-    def available(self):
-        """Return True if the device is present on the Bluetooth stack."""
+    def available(self) -> bool:
+        """Return True if the device is connected or visible on the Bluetooth stack."""
         if self._instance.is_on is None:
             return False
         if self._hass is None:
             return True  # hass not yet set (before async_added_to_hass)
+        # Active connection takes priority: BLE devices stop advertising while connected,
+        # so async_address_present would return False even though the device is reachable.
+        if self._instance.is_connected:
+            return True
         return bluetooth.async_address_present(
             self._hass, self._instance.address, connectable=True
         )
@@ -139,6 +143,14 @@ class BLEDOMBluetoothEntity(RestoreEntity):
 
         Must be called inside async_added_to_hass after self._hass is set.
         """
+        # Register for unexpected disconnects from the instance
+        unregister = self._instance.register_disconnect_callback(self._async_on_instance_disconnect)
+        self.async_on_remove(unregister)
+
+        # Register to be notified when reconnect succeeds so HA state is updated
+        unregister_rc = self._instance.register_reconnect_callback(self.async_write_ha_state)
+        self.async_on_remove(unregister_rc)
+
         self.async_on_remove(
             bluetooth.async_track_unavailable(
                 self._hass,
@@ -147,14 +159,23 @@ class BLEDOMBluetoothEntity(RestoreEntity):
                 connectable=True,
             )
         )
+        # connectable omitted from filter: fires for any advertisement (connectable
+        # or non-connectable, direct adapter or proxy). We check connectivity in the
+        # callback itself.
         self.async_on_remove(
             bluetooth.async_register_callback(
                 self._hass,
                 self._async_device_available,
-                {"address": self._instance.address, "connectable": True},
+                {"address": self._instance.address},
                 bluetooth.BluetoothScanningMode.ACTIVE,
             )
         )
+
+    @callback
+    def _async_on_instance_disconnect(self) -> None:
+        """Called by BLEDOMInstance on unexpected disconnect – update state and schedule retry."""
+        self.async_write_ha_state()
+        self._instance.schedule_reconnect_with_delay(30)
 
     @callback
     def _async_device_unavailable(
@@ -165,13 +186,18 @@ class BLEDOMBluetoothEntity(RestoreEntity):
         self.async_write_ha_state()
 
     @callback
+    @callback
     def _async_device_available(
         self,
         service_info: bluetooth.BluetoothServiceInfoBleak,
         change: bluetooth.BluetoothChange,
     ) -> None:
-        """Handle device becoming available again."""
-        LOGGER.debug("%s is available again", self.name)
+        """Handle device advertisement – update BLEDevice ref and reconnect if disconnected."""
+        if self._instance.is_connected:
+            return  # Already connected, advertisement during active connection – ignore
+        LOGGER.debug("%s: Advertisement received while disconnected – attempting reconnect", self.name)
+        self._instance.update_ble_device(service_info)
+        self._instance.schedule_reconnect()
         self.async_write_ha_state()
 
 class BLEDOMInstance:
@@ -190,6 +216,7 @@ class BLEDOMInstance:
         self._cached_services: BleakGATTServiceCollection | None = None
         self._expected_disconnect = False
         self._is_on = None
+        self._last_known_is_on: bool | None = None  # Preserved across disconnects
         self._rgb_color = None
         self._rgb_color_base = (255, 255, 255)  # Base RGB without brightness scaling
         self._brightness = 255
@@ -204,9 +231,10 @@ class BLEDOMInstance:
         self._color_temp = None
         self._read_uuid = None
         self._write_uuid = None
-        
-        # New: Brightness mode configuration
         self._brightness_mode = "auto"  # auto, rgb, native
+        self._disconnect_callbacks: list[Callable[[], None]] = []
+        self._reconnect_callbacks: list[Callable[[], None]] = []
+        self._reconnect_task: asyncio.Task | None = None  # Guard: only one reconnect at a time
         
 
         try:
@@ -310,6 +338,11 @@ class BLEDOMInstance:
         return self._is_on
 
     @property
+    def is_connected(self) -> bool:
+        """Return True if there is an active BLE connection."""
+        return bool(self._client and self._client.is_connected)
+
+    @property
     def rgb_color(self):
         return self._rgb_color
 
@@ -357,7 +390,85 @@ class BLEDOMInstance:
     @property
     def model(self):
         return self._model
-    
+
+    def update_ble_device(self, service_info: bluetooth.BluetoothServiceInfoBleak) -> None:
+        """Update the BLEDevice reference when the device reappears on the BT stack.
+
+        Must be called before triggering a reconnect so establish_connection
+        receives a fresh, valid BLEDevice object.
+        """
+        fresh = bluetooth.async_ble_device_from_address(
+            self._hass, self._address, connectable=True
+        )
+        if fresh:
+            self._device = fresh
+            LOGGER.debug("%s: BLEDevice reference updated for reconnect", self.name)
+        if self._device_data is None:
+            self._device_data = DeviceData(self._hass, service_info)
+
+    def schedule_reconnect(self) -> None:
+        """Schedule a single reconnect task. No-op if one is already running."""
+        if self._reconnect_task and not self._reconnect_task.done():
+            LOGGER.debug("%s: Reconnect already in progress, skipping", self.name)
+            return
+
+        async def _reconnect():
+            try:
+                await self.update()
+                if self.is_connected:
+                    self._notify_reconnect_callbacks()
+            finally:
+                self._reconnect_task = None
+
+        self._reconnect_task = self.loop.create_task(_reconnect())
+
+    def schedule_reconnect_with_delay(self, delay: float) -> None:
+        """Schedule a reconnect attempt after a delay (seconds).
+
+        Used as a fallback after unexpected disconnect in case async_register_callback
+        does not fire (e.g. no connectable adapter in range yet, only proxies).
+        No-op if a reconnect task is already running.
+        """
+        if self._reconnect_task and not self._reconnect_task.done():
+            return
+
+        async def _delayed_reconnect():
+            try:
+                LOGGER.debug("%s: Attempting delayed reconnect after %ss", self.name, delay)
+                await asyncio.sleep(delay)
+                if not self.is_connected:
+                    await self.update()
+                    if self.is_connected:
+                        self._notify_reconnect_callbacks()
+            finally:
+                self._reconnect_task = None
+
+        self._reconnect_task = self.loop.create_task(_delayed_reconnect())
+
+    def register_disconnect_callback(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register a callback for unexpected disconnects. Returns an unregister function."""
+        self._disconnect_callbacks.append(callback)
+        def unregister():
+            self._disconnect_callbacks.remove(callback)
+        return unregister
+
+    def register_reconnect_callback(self, callback: Callable[[], None]) -> Callable[[], None]:
+        """Register a callback fired after a successful reconnect. Returns an unregister function."""
+        self._reconnect_callbacks.append(callback)
+        def unregister():
+            self._reconnect_callbacks.remove(callback)
+        return unregister
+
+    def _notify_disconnect_callbacks(self) -> None:
+        """Notify all registered entities about an unexpected disconnect."""
+        for cb in self._disconnect_callbacks:
+            self.loop.call_soon(cb)
+
+    def _notify_reconnect_callbacks(self) -> None:
+        """Notify all registered entities that reconnect succeeded."""
+        for cb in self._reconnect_callbacks:
+            self.loop.call_soon(cb)
+
     @retry_bluetooth_connection_error
     async def set_color_temp(self, value: int) -> None:
         if value > 100:
@@ -594,17 +705,22 @@ class BLEDOMInstance:
             #     except Exception as e:
             #         LOGGER.debug("%s: Could not query state: %s", self.name, e)
 
-            # PROBLEMS WITH STATUS VALUE, I HAVE NOT VALUE TO WRITE AND GET STATUS
-            if(self._is_on is None):
-                self._is_on = False
-                self._rgb_color = (0, 0, 0)
-                self._color_temp_kelvin = 5000
-                self._brightness = 255
+            # Device doesn't expose its state via notifications, so we can only
+            # restore the last known state after reconnect. On very first connect
+            # we default to off.
+            if self._is_on is None:
+                self._is_on = self._last_known_is_on if self._last_known_is_on is not None else False
+                if self._last_known_is_on is None:
+                    # Truly first connection – set safe defaults
+                    self._rgb_color = (0, 0, 0)
+                    self._color_temp_kelvin = 5000
+                    self._brightness = 255
 
-            self._device_data.update_device()
+            if self._device_data is not None:
+                self._device_data.update_device()
             
         except (Exception) as error:
-            self._is_on = False
+            self._is_on = None  # Signal unavailability to the available property
             LOGGER.error("Error getting status: %s", error)
             track = traceback.format_exc()
             LOGGER.debug(track)
@@ -634,7 +750,10 @@ class BLEDOMInstance:
                         self.name,
                         self._disconnected,
                         cached_services=self._cached_services,
-                        ble_device_callback=lambda: self._device,
+                        ble_device_callback=lambda: (
+                            bluetooth.async_ble_device_from_address(self._hass, self._address)
+                            or self._device
+                        ),
                     )
             except asyncio.TimeoutError:
                 LOGGER.error("%s: Connection attempt timed out; RSSI: %s", self.name, self.rssi)
@@ -839,7 +958,13 @@ class BLEDOMInstance:
         if self._expected_disconnect:
             LOGGER.debug("%s: Disconnected from device; RSSI: %s", self.name, self.rssi)
             return
-        LOGGER.warning("%s: Device unexpectedly disconnected; RSSI: %s",self.name,self.rssi,)
+        LOGGER.warning("%s: Device unexpectedly disconnected; RSSI: %s", self.name, self.rssi)
+        self._client = None
+        # Preserve last known on/off state so it can be restored after reconnect
+        if self._is_on is not None:
+            self._last_known_is_on = self._is_on
+        self._is_on = None
+        self._notify_disconnect_callbacks()
 
     def _disconnect(self) -> None:
         """Disconnect from device."""
